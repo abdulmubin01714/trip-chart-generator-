@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="bn"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ট্রিপ চার্ট জেনারেটর</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<style>
+body{font-family:system-ui,sans-serif;margin:0;padding:12px;max-width:760px;margin:auto;background:#f6f7f9;color:#1b1f24}
+h1{font-size:20px}label{display:block;font-size:13px;margin-top:10px;font-weight:600}
+input,button{width:100%;box-sizing:border-box;padding:10px;font-size:15px;border:1px solid #bbb;border-radius:8px}
+button{background:#0b5fff;color:#fff;border:0;margin-top:14px;font-weight:600}
+.card{background:#fff;border-radius:10px;padding:12px;margin-bottom:12px}
+.g{display:grid;grid-template-columns:1fr 1fr;gap:8px}small{color:#555}
+table{border-collapse:collapse;width:100%;font-size:12px}td,th{border:1px solid #ddd;padding:4px;text-align:center}
+.w{overflow-x:auto}.err{color:#b00020}
+</style></head><body>
+<h1>টাইমটেবিল → ট্রিপ চার্ট</h1>
+<div class="card">
+<label>টাইমটেবিল PDF (একাধিক ফাইল দেওয়া যায়)</label><input type="file" id="f" accept=".pdf" multiple>
+<div class="g">
+<div><label>ডিউটি সংখ্যা (০ = অটো)</label><input id="D" type="number" value="0"></div>
+<div><label>প্রতি ডিউটিতে সর্বোচ্চ লেগ (৬ লেগ = ৩ রাউন্ড)</label><input id="K" type="number" value="6"></div>
+<div><label>সর্বোচ্চ রানিং ঘণ্টা</label><input id="R" type="number" step="0.1" value="4.7"></div>
+<div><label>ওয়েটিং ডিউটি সাইন-অন (কমা দিয়ে)</label><input id="W" value="07:00,12:00,15:00"></div>
+<div><label>ডিপো থেকে শুরুতে ফুল-সাইকেল ট্রেন সংখ্যা</label><input id="nS" type="number" value="9"></div>
+<div><label>শুধু ট্রেন ডিপোতে নেওয়া ডিউটি (ট্রিপ ছাড়া)</label><input id="nB" type="number" value="4"></div>
+<div><label>শেষে ফুল-সাইকেল সহ ডিপোতে ঢোকা ট্রেন সংখ্যা</label><input id="nC" type="number" value="6"></div>
+</div>
+<button onclick="run()">ট্রিপ চার্ট তৈরি করুন</button>
+<small id="st"></small></div>
+<div id="out"></div>
+<script>
+const $=i=>document.getElementById(i);
+const T=s=>{const[a,b,c]=s.split(':').map(Number);return a*3600+b*60+c};
+const M=s=>Math.ceil(s/60);
+const F=m=>String(Math.floor(m/60)%24).padStart(2,'0')+':'+String(m%60).padStart(2,'0');
+const P=s=>{const[a,b]=s.trim().split(':').map(Number);return a*60+(b||0)};
+const loc=l=>l.replace(/ UP$/,'');
+pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+let DUTIES=[];
+
+async function readPdf(file){
+ const pdf=await pdfjsLib.getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise;const out=[];
+ for(let p=1;p<=pdf.numPages;p++){
+  const tc=await(await pdf.getPage(p)).getTextContent();const its=[];
+  tc.items.forEach(i=>{const w=i.width||0,n=i.str.length||1,re=/\S+/g;let m;while(m=re.exec(i.str))its.push({t:m[0],x:i.transform[4]+w*m.index/n,y:i.transform[5]})});
+  its.sort((a,b)=>b.y-a.y||a.x-b.x);const L=[];
+  its.forEach(i=>{const l=L[L.length-1];if(l&&Math.abs(l.y-i.y)<2.5)l.a.push(i);else L.push({y:i.y,a:[i]})});
+  out.push(L.map(l=>l.a.sort((a,b)=>a.x-b.x)));
+ }return out}
+
+function pageCycles(L){
+ const isT=t=>/^\d\d:\d\d:\d\d$/.test(t);
+ const tr=L.find(l=>{const v=l.filter(i=>/^\d{3}$/.test(i.t));return v.length>=2&&v.length>=l.length-2});
+ if(!tr)return[];const tn=tr.filter(i=>/^\d{3}$/.test(i.t)),n=tn.length;
+ const times=L.map(l=>l.filter(i=>isT(i.t))).filter(a=>a.length);
+ const full=times.filter(a=>a.length==n);if(full.length<32)return[];
+ const f=full.slice(0,32),ix=times.indexOf(f[0]),jx=times.indexOf(f[31]);
+ const col=x=>{let b=0;f[0].forEach((c,i)=>{if(Math.abs(c.x-x)<Math.abs(f[0][b].x-x))b=i});return b};
+ const dep={},stb={};
+ times.slice(0,ix).forEach(a=>a.forEach(i=>dep[col(i.x)]=T(i.t)));
+ times.slice(jx+1).forEach(a=>a.forEach(i=>stb[col(i.x)]=T(i.t)));
+ return tn.map((c,k)=>({tn:c.t,dep:dep[k],unDn:T(f[0][k].t),mjArr:T(f[15][k].t),mjUp:T(f[16][k].t),unArr:T(f[31][k].t),stb:stb[k]}));
+}
+
+function buildLegs(cyc,o){
+ const by={};cyc.forEach(c=>(by[c.tn]=by[c.tn]||[]).push(c));
+ Object.values(by).forEach(a=>a.sort((x,y)=>x.unDn-y.unDn));
+ const tns=Object.keys(by),sm={},em={};
+ tns.filter(t=>by[t][0].dep!=null).sort((a,b)=>by[a][0].dep-by[b][0].dep).forEach((t,i)=>sm[t]=i<o.nS?'F':'H');
+ const ends=tns.filter(t=>by[t].at(-1).stb!=null).sort((a,b)=>by[a].at(-1).stb-by[b].at(-1).stb);
+ ends.forEach((t,i)=>em[t]=i<o.nB?'B':(i>=ends.length-o.nC?'C':'A'));
+ const legs=[];
+ tns.forEach(tn=>{
+  const cs=by[tn],m=cs.length-1,c0=cs[0],last=cs[m],seq=[];
+  const mk=(s,e,sl,el,km,r,sh)=>seq.push({tn,s:M(s),e:M(e),sl,el,km,r,sh});
+  const E=last.stb==null?'N':em[tn],full=sm[tn]=='F'&&m>=1;
+  const d0=c0.dep!=null?c0.dep:c0.unDn-600;
+  if(full)mk(d0,c0.unArr,'UND','UN UP',41,'UND-UN DN-PA DN-MJ DN-MJ UP-PA UP-UN UP');
+  else{mk(d0,c0.mjUp,'UND','MJ UP',21,'UND-UN DN-PA DN-MJ DN');
+   if(m==0&&E!='N'&&E!='B')mk(c0.mjUp,last.stb,'MJ UP','UND',21,'MJ UP-PA UP-UN UP-UND');
+   else{mk(c0.mjUp,c0.unArr,'MJ UP','UN UP',20,'MJ UP-PA UP-UN UP');if(m==0&&E=='B')mk(c0.unArr,last.stb,'UN UP','UND',1,'UN UP-UND',1)}}
+  for(let k=1;k<=m;k++){const c=cs[k];
+   if(k==m&&E=='C'){mk(cs[k-1].unArr,last.stb,'UN UP','UND',41,'UN UP-UN DN-PA DN-MJ DN-MJ UP-PA UP-UN UP-UND');break}
+   mk(cs[k-1].unArr,c.mjUp,'UN UP','MJ UP',20,'UN UP-UN DN-PA DN-MJ DN');
+   if(k==m&&E=='A')mk(c.mjUp,c.stb,'MJ UP','UND',21,'MJ UP-PA UP-UN UP-UND');
+   else mk(c.mjUp,c.unArr,'MJ UP','UN UP',20,'MJ UP-PA UP-UN UP');
+   if(k==m&&E=='B')mk(c.unArr,c.stb,'UN UP','UND',1,'UN UP-UND',1);
+  }
+  seq.forEach((l,i)=>{l.pv=seq[i-1];l.nx=seq[i+1]});legs.push(...seq);
+ });return legs}
+
+function build(legs,o){
+ const rest=legs.filter(l=>!l.sh).sort((a,b)=>a.s-b.s||a.e-b.e),D=[],fail=[];
+ const gap=l=>l=='MJ UP'?5:0,maxGap=75;
+ const find=(v,relax)=>{let b=null;
+  for(const d of D){const u=d.l.at(-1);
+   if(u.el!=v.sl||u.el=='UND')continue;const g=v.s-u.e;
+   if(g<gap(u.el)||g>maxGap)continue;
+   if(v.e-d.on>460)continue;
+   if(!relax&&(d.l.length>=o.K||d.run+(v.e-v.s)>o.run))continue;
+   if(!b||u.e>b.l.at(-1).e)b=d}return b};
+ for(const v of rest){
+  let b=find(v,false);
+  if(!b&&o.D&&D.length>=o.D)b=find(v,true);
+  if(!b){if(o.D&&D.length>=o.D){fail.push(v);continue}
+   b={l:[],run:0,on:v.s-(v.sl=='UND'?45:20),kind:'Trips'};D.push(b)}
+  b.l.push(v);b.run+=v.e-v.s}
+ legs.filter(l=>l.sh).forEach(l=>D.push({l:[l],run:l.e-l.s,on:l.s-20,kind:'Pro+D.entry'}));
+ o.W.forEach(w=>D.push({l:[],run:0,on:w,kind:'Waiting'}));
+ D.sort((a,b)=>a.on-b.on);
+ D.forEach((d,i)=>{d.n=i+1;d.l.forEach(l=>l.d=d.n);
+  d.type=d.on<840?'Day':d.on<900?'Night-A':d.on<950?'Night-B':'Night-C';
+  d.sl=d.l.length?loc(d.l[0].sl):'UN';d.el=d.l.length?loc(d.l.at(-1).el):'UN';
+  d.km=d.l.reduce((s,l)=>s+l.km,0)});
+ return{D,fail}}
+
+function rows(d){return d.l.map((l,i)=>{const n=d.l[i+1];
+ return[l.tn,l.pv?l.pv.d:'DCC',F(l.s),l.sl,l.r,F(l.e),l.el,l.nx?l.nx.d:(l.el=='UND'?'DCC':'-'),
+ n?F(n.s-l.e).replace(/^/,''):'-',F(l.e-l.s),l.km]})}
+
+async function run(){
+ const fs=$('f').files;if(!fs.length){$('st').textContent='আগে PDF দিন';return}
+ $('st').textContent='পড়া হচ্ছে...';$('out').innerHTML='';
+ try{let cyc=[];
+  for(const f of fs){const pages=await readPdf(f);pages.forEach(L=>cyc.push(...pageCycles(L)))}
+  if(!cyc.length)throw Error('টাইমটেবিলের কোনো ট্রেন কলাম পাওয়া যায়নি');
+  const o={D:+$('D').value,K:+$('K').value,run:$('R').value*60,nS:+$('nS').value,nB:+$('nB').value,nC:+$('nC').value,
+   W:$('W').value.split(',').filter(x=>x.trim()).map(P)};
+  const legs=buildLegs(cyc,o),{D,fail}=build(legs,o);DUTIES=D;
+  const tot=D.filter(d=>d.kind=='Trips').length;
+  let h=`<div class="card"><b>${cyc.length}টি সাইকেল, ${legs.length}টি লেগ → মোট ${D.length}টি ডিউটি</b> (ট্রিপ ${tot}, ওয়েটিং ${D.filter(d=>d.kind=='Waiting').length}, ডিপো-অনলি ${D.filter(d=>d.kind=='Pro+D.entry').length})`;
+  if(fail.length)h+=`<p class="err">${fail.length}টি লেগ ডিউটিতে বসেনি — ডিউটি সংখ্যা বাড়ান বা লেগ/রানিং সীমা বাড়ান।</p>`;
+  h+=`<button onclick="pdf()">PDF ডাউনলোড</button></div><div class="card w"><table><tr><th>#</th><th>ধরন</th><th>সাইন অন</th><th>অফ</th><th>লেগ</th><th>রানিং</th><th>কিমি</th></tr>`;
+  D.forEach(d=>h+=`<tr><td>${d.n}</td><td>${d.kind}</td><td>${F(d.on)} ${d.sl}</td><td>${F(d.on+480)} ${d.el}</td><td>${d.l.length}</td><td>${F(d.run)}</td><td>${d.km}</td></tr>`);
+  $('out').innerHTML=h+'</table></div>';$('st').textContent='';
+ }catch(e){$('st').innerHTML='<span class="err">'+e.message+'</span>'}}
+
+function pdf(){
+ const doc=new jspdf.jsPDF({orientation:'landscape',format:'a4'});
+ doc.setFontSize(14);doc.text('Duty Description',14,12);
+ doc.autoTable({startY:16,styles:{fontSize:7},head:[['Duty No','Sign On','Loc','Sign Off','Loc','Duty Hrs','Running Hrs','Kms','Type','Shift']],
+  body:DUTIES.map(d=>[d.n,F(d.on),d.sl,F(d.on+480),d.el,'08:00',d.l.length?F(d.run):'-',d.km||'-',d.kind,d.type])});
+ doc.addPage();doc.setFontSize(14);doc.text('Trip Description',14,12);let y=18;
+ DUTIES.forEach(d=>{
+  if(y>150){doc.addPage();y=14}
+  doc.setFontSize(9);doc.text(`Duty ${d.n} | ${d.kind} | ${d.type} | Sign on ${F(d.on)} ${d.sl} | Sign off ${F(d.on+480)} ${d.el} | Running ${F(d.run)} | ${d.km} km`,14,y);
+  if(d.l.length){doc.autoTable({startY:y+2,styles:{fontSize:7,cellPadding:1},
+   head:[['Train','Takeover','Start','Start Loc','Trip Sequence','End','End Loc','Handover','Break','Running','Kms']],body:rows(d)});
+   y=doc.lastAutoTable.finalY+6}else y+=8});
+ doc.save('trip-chart.pdf')}
+</script></body></html>
